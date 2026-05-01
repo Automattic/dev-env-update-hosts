@@ -121,9 +121,8 @@ static char* find_executable(const char* name)
 
 #endif // defined(__linux__) || defined(__APPLE__)
 
-static bool is_valid_label(const char* label)
+static bool is_valid_label(const char* label, size_t len)
 {
-    size_t len = strlen(label);
     if (len == 0 || len > 63 || label[0] == '-' || label[len - 1] == '-') {
         return false;
     }
@@ -143,23 +142,24 @@ static bool is_valid_domain(const char* s)
         return false;
     }
 
-    char* domain  = my_strdup(s);
-    if (!domain) {
-        return false;
-    }
+    bool valid = false;
+    const char* label_start = s;
 
-    bool valid = true;
-    const char* label = strtok(domain, ".");
-    while (label) {
-        if (!is_valid_label(label)) {
-            valid = false;
-            break;
+    for (const char* p = s; ; ++p) {
+        if (*p == '.' || *p == '\0') {
+            if (!is_valid_label(label_start, (size_t)(p - label_start))) {
+                return false;
+            }
+
+            valid = true;
+            if (*p == '\0') {
+                break;
+            }
+
+            label_start = p + 1;
         }
-
-        label = strtok(NULL, ".");
     }
 
-    free(domain);
     return valid;
 }
 
