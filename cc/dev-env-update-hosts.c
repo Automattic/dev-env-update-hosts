@@ -226,6 +226,11 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
+    if (argc < 2) {
+        fputs("Usage: dev-env-update-hosts <domain1> [<domain2> ...]\n", stderr);
+        return EXIT_FAILURE;
+    }
+
     const char* domains[argc - 1];
     size_t ndomains = 0;
     for (int i = 1; i < argc; ++i) {
