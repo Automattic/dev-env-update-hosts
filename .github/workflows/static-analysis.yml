@@ -50,7 +50,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload scan results
-        uses: github/codeql-action/upload-sarif@b611370bb5703a7efb587f9d136a52ea24c5c38c # v3.25.11
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
         with:
           sarif_file: /tmp/scan-build.sarif
           category: scanbuild
