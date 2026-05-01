@@ -181,7 +181,12 @@ static char* get_hosts_file_path()
 
     int n = snprintf(hosts_path, max_path_length, "%s\\System32\\drivers\\etc\\hosts", system_root);
     if (n < 0 || n >= (int) max_path_length) {
-        perror("Error constructing hosts file path");
+        if (n < 0) {
+            fprintf(stderr, "Error constructing hosts file path: encoding error\n");
+        }
+        else {
+            fprintf(stderr, "Error constructing hosts file path: path truncated (required %d bytes, buffer size %zu)\n", n + 1, max_path_length);
+        }
         free(hosts_path);
         return NULL;
     }
