@@ -78,7 +78,11 @@ static bool is_wsl()
         return false;
     }
 
-    return strstr(uts.release, "Microsoft");
+    return
+        strstr(uts.release, "-WSL2") != NULL ||
+        strstr(uts.release, "microsoft-standard") != NULL ||
+        strstr(uts.release, "Microsoft") != NULL || strstr(uts.release, "microsoft") != NULL
+    ;
 #endif // defined(__APPLE__)
 }
 
