@@ -25,7 +25,7 @@ jobs:
       SCANBUILD_DIR: /tmp/scanbuild
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install clang-tools
         run: sudo apt-get update && sudo apt-get install -y clang-tools
