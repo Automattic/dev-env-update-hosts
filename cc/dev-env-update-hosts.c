@@ -27,7 +27,7 @@ static int update_hosts(const char* fname, const char** domain, size_t ndomains)
     for (size_t i = 0; i < ndomains; ++i) {
         if (fprintf(hosts, "127.0.0.1\t%s\n", domain[i]) < 0) {
             perror("Error writing to hosts file");
-            status = EXIT_FAILURE;;
+            status = EXIT_FAILURE;
             break;
         }
     }
