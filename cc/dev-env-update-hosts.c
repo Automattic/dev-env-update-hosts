@@ -182,6 +182,7 @@ static char* get_hosts_file_path()
     int n = snprintf(hosts_path, max_path_length, "%s\\System32\\drivers\\etc\\hosts", system_root);
     if (n < 0 || n >= (int) max_path_length) {
         perror("Error constructing hosts file path");
+        free(hosts_path);
         return NULL;
     }
 
