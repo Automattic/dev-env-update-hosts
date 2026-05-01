@@ -243,7 +243,7 @@ static int escalate_privilege(int argc, char** argv) {
 int main(int argc, char** argv)
 {
     if (argc < 2) {
-        const char* prog = get_program_name(argv[0]);
+        const char* prog = get_program_name((argc > 0 && argv != NULL) ? argv[0] : NULL);
 
         fprintf(stderr, "Usage: %s <domain1> [<domain2> ...]\n", prog);
         return EXIT_FAILURE;
