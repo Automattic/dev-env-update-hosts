@@ -187,6 +187,26 @@ static char* get_hosts_file_path()
 #endif
 }
 
+static const char* get_program_name(const char* argv0)
+{
+    const char* prog = (argv0 && argv0[0]) ? argv0 : "dev-env-update-hosts";
+    const char* unix_slash = strrchr(prog, '/');
+    const char* win_slash  = strrchr(prog, '\\');
+    const char* slash      = NULL;
+
+    if (unix_slash && win_slash) {
+        slash = (unix_slash > win_slash) ? unix_slash : win_slash;
+    }
+    else if (unix_slash) {
+        slash = unix_slash;
+    }
+    else {
+        slash = win_slash;
+    }
+
+    return (slash && slash[1] != '\0') ? slash + 1 : prog;
+}
+
 static int escalate_privilege(int argc, char** argv) {
 #if defined(__linux__) || defined(__APPLE__)
     if (geteuid() != 0) {
@@ -222,12 +242,14 @@ static int escalate_privilege(int argc, char** argv) {
 
 int main(int argc, char** argv)
 {
-    if (escalate_privilege(argc, argv) != EXIT_SUCCESS) {
+    if (argc < 2) {
+        const char* prog = get_program_name(argv[0]);
+
+        fprintf(stderr, "Usage: %s <domain1> [<domain2> ...]\n", prog);
         return EXIT_FAILURE;
     }
 
-    if (argc < 2) {
-        fputs("Usage: dev-env-update-hosts <domain1> [<domain2> ...]\n", stderr);
+    if (escalate_privilege(argc, argv) != EXIT_SUCCESS) {
         return EXIT_FAILURE;
     }
 
