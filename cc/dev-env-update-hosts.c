@@ -128,7 +128,7 @@ static bool is_valid_label(const char* label, size_t len)
     }
 
     for (size_t i = 0; i < len; ++i) {
-        if (!isalnum(label[i]) && label[i] != '-') {
+        if (!isalnum((unsigned char)label[i]) && label[i] != '-') {
             return false;
         }
     }
@@ -138,7 +138,7 @@ static bool is_valid_label(const char* label, size_t len)
 
 static bool is_valid_domain(const char* s)
 {
-    if (s == NULL || strlen(s) > 255) {
+    if (s == NULL || strnlen(s, 256) > 255) {
         return false;
     }
 
