@@ -136,13 +136,14 @@ static bool is_valid_label(const char* label, size_t len)
     return true;
 }
 
+static const size_t MAX_DOMAIN_LEN = 255;
+
 static bool is_valid_domain(const char* s)
 {
-    if (s == NULL || strnlen(s, 256) > 255) {
+    if (s == NULL || strnlen(s, MAX_DOMAIN_LEN + 1) > MAX_DOMAIN_LEN) {
         return false;
     }
 
-    bool valid = false;
     const char* label_start = s;
 
     for (const char* p = s; ; ++p) {
@@ -151,16 +152,13 @@ static bool is_valid_domain(const char* s)
                 return false;
             }
 
-            valid = true;
             if (*p == '\0') {
-                break;
+                return true;
             }
 
             label_start = p + 1;
         }
     }
-
-    return valid;
 }
 
 static char* get_hosts_file_path()
