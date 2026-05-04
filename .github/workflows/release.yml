@@ -33,7 +33,11 @@ jobs:
           outputs: type=local,dest=out
 
       - name: Compress artifacts and generate checksums
-        run: for i in dev-env-update-hosts-*; do gzip -9 "${i}"; sha256sum "${i}.gz" | awk '{print $1}' > "${i}.gz.sum"; done
+        run: |
+          for i in dev-env-update-hosts-*; do
+            gzip -9n "${i}";
+            sha256sum "${i}.gz" | awk '{print $1}' > "${i}.gz.sum";
+          done
         working-directory: out
 
       - name: Attest build provenance
