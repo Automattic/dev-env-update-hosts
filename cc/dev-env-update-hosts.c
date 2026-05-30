@@ -1,12 +1,21 @@
 #if defined(__linux__) || defined(__APPLE__)
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/utsname.h>
 #endif // defined(__linux__) || defined(__APPLE__)
+
+#if defined(__APPLE__)
+#include <errno.h>
+#include <mach-o/dyld.h>
+#include <sys/acl.h>
+#include <sys/types.h>
+#endif // defined(__APPLE__)
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 static int update_hosts(const char* fname, const char** domain, size_t ndomains)
 {
@@ -85,38 +94,237 @@ static bool is_wsl()
 #endif // defined(__APPLE__)
 }
 
-static char* find_executable(const char* name)
+static bool is_absolute_path(const char* path)
 {
-    char* path_env = getenv("PATH");
-    char* path     = my_strdup(path_env ? path_env : "/usr/bin");
-    if (!path) {
-        perror("Error allocating memory");
-        return NULL;
-    }
+    return path != NULL && path[0] == '/';
+}
 
-    size_t len  = strlen(path) + strlen(name) + 2;
-    char* fname = malloc(len);
-    if (!fname) {
-        free(path);
-        perror("Error allocating memory");
-        return NULL;
-    }
-
-    char* dir = strtok(path, ":");
-    while (dir) {
-        snprintf(fname, len, "%s/%s", dir, name);
-        if (access(fname, X_OK) == 0) {
-            free(path);
-            return fname;
+#if defined(__APPLE__)
+static bool has_no_extended_acl(const char* path)
+{
+    errno = 0;
+    acl_t acl = acl_get_file(path, ACL_TYPE_EXTENDED);
+    if (!acl) {
+        if (errno != ENOENT) {
+            return false;
         }
 
-        dir = strtok(NULL, ":");
+        // Darwin reports ENOENT when a path has no extended ACL.
+        struct stat st;
+        return stat(path, &st) == 0;
     }
 
-    free(path);
-    free(fname);
+    if (acl_free(acl) != 0) {
+        return false;
+    }
+
+    return false;
+}
+#endif // defined(__APPLE__)
+
+static bool is_trusted_directory(const char* path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return false;
+    }
+
+    if (!S_ISDIR(st.st_mode)) {
+        return false;
+    }
+
+    if (st.st_uid != 0) {
+        return false;
+    }
+
+#if defined(__APPLE__)
+    if (!has_no_extended_acl(path)) {
+        return false;
+    }
+#endif // defined(__APPLE__)
+
+    return (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+static bool has_trusted_parent_directories(const char* path)
+{
+    if (!is_absolute_path(path)) {
+        return false;
+    }
+
+    char* parent = my_strdup(path);
+    if (!parent) {
+        perror("Error allocating memory");
+        return false;
+    }
+
+    char* slash = strrchr(parent, '/');
+    if (!slash) {
+        free(parent);
+        return false;
+    }
+
+    if (slash == parent) {
+        parent[1] = '\0';
+    }
+    else {
+        *slash = '\0';
+    }
+
+    for (;;) {
+        if (!is_trusted_directory(parent)) {
+            free(parent);
+            return false;
+        }
+
+        if (strcmp(parent, "/") == 0) {
+            free(parent);
+            return true;
+        }
+
+        slash = strrchr(parent, '/');
+        if (!slash) {
+            free(parent);
+            return false;
+        }
+
+        if (slash == parent) {
+            parent[1] = '\0';
+        }
+        else {
+            *slash = '\0';
+        }
+    }
+}
+
+static bool is_trusted_executable(const char* path)
+{
+    struct stat st;
+    if (!is_absolute_path(path) || stat(path, &st) != 0) {
+        return false;
+    }
+
+    if (!S_ISREG(st.st_mode)) {
+        return false;
+    }
+
+    if (st.st_uid != 0) {
+        return false;
+    }
+
+    if ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        return false;
+    }
+
+#if defined(__APPLE__)
+    if (!has_no_extended_acl(path)) {
+        return false;
+    }
+#endif // defined(__APPLE__)
+
+    if (access(path, X_OK) != 0) {
+        return false;
+    }
+
+    return has_trusted_parent_directories(path);
+}
+
+static char* resolve_trusted_helper_candidate(const char* path)
+{
+    if (!is_absolute_path(path) || !has_trusted_parent_directories(path)) {
+        return NULL;
+    }
+
+    char* resolved_path = realpath(path, NULL);
+    if (!resolved_path) {
+        return NULL;
+    }
+
+    if (!is_trusted_executable(resolved_path)) {
+        free(resolved_path);
+        return NULL;
+    }
+
+    return resolved_path;
+}
+
+static char* find_trusted_helper(const char* const* candidates, size_t ncandidates)
+{
+    for (size_t i = 0; i < ncandidates; ++i) {
+        char* resolved_path = resolve_trusted_helper_candidate(candidates[i]);
+        if (resolved_path) {
+            return resolved_path;
+        }
+    }
+
     return NULL;
 }
+
+#if defined(__linux__)
+static char* get_self_path()
+{
+    size_t path_len = 1024;
+
+    for (;;) {
+        char* path = malloc(path_len);
+        if (!path) {
+            perror("Error allocating memory");
+            return NULL;
+        }
+
+        ssize_t bytes_read = readlink("/proc/self/exe", path, path_len - 1);
+        if (bytes_read < 0) {
+            perror("Error resolving executable path");
+            free(path);
+            return NULL;
+        }
+
+        if ((size_t)bytes_read < path_len - 1) {
+            path[bytes_read] = '\0';
+            return path;
+        }
+
+        free(path);
+        if (path_len > 1024 * 1024) {
+            fputs("Error resolving executable path: path too long\n", stderr);
+            return NULL;
+        }
+        path_len *= 2;
+    }
+}
+#elif defined(__APPLE__)
+static char* get_self_path()
+{
+    uint32_t path_len = 1024;
+    char* path = NULL;
+
+    for (;;) {
+        path = malloc(path_len);
+        if (!path) {
+            perror("Error allocating memory");
+            return NULL;
+        }
+
+        uint32_t required_len = path_len;
+        if (_NSGetExecutablePath(path, &required_len) == 0) {
+            char* resolved_path = realpath(path, NULL);
+            free(path);
+            if (!resolved_path) {
+                perror("Error resolving executable path");
+                return NULL;
+            }
+            return resolved_path;
+        }
+
+        free(path);
+        if (required_len <= path_len) {
+            fputs("Error resolving executable path\n", stderr);
+            return NULL;
+        }
+        path_len = required_len;
+    }
+}
+#endif // defined(__linux__)
 
 #endif // defined(__linux__) || defined(__APPLE__)
 
@@ -258,13 +466,16 @@ static const char* get_program_name(const char* argv0)
 static int escalate_privilege(int argc, char** argv) {
 #if defined(__linux__) || defined(__APPLE__)
     if (geteuid() != 0) {
+        const char* pkexec_candidates[] = { "/usr/bin/pkexec" };
+        const char* sudo_candidates[] = { "/usr/bin/sudo", "/bin/sudo" };
+
         char* elevator = NULL;
         if (has_dbus() && !is_wsl()) {
-            elevator = find_executable("pkexec");
+            elevator = find_trusted_helper(pkexec_candidates, sizeof(pkexec_candidates) / sizeof(pkexec_candidates[0]));
         }
 
         if (!elevator) {
-            elevator = find_executable("sudo");
+            elevator = find_trusted_helper(sudo_candidates, sizeof(sudo_candidates) / sizeof(sudo_candidates[0]));
         }
 
         if (!elevator) {
@@ -272,16 +483,31 @@ static int escalate_privilege(int argc, char** argv) {
             return EXIT_FAILURE;
         }
 
+        char* self_path = get_self_path();
+        if (!self_path) {
+            free(elevator);
+            return EXIT_FAILURE;
+        }
+
+        if (!is_trusted_executable(self_path)) {
+            fprintf(stderr, "Error: Refusing to elevate untrusted executable path: %s\n", self_path);
+            free(elevator);
+            free(self_path);
+            return EXIT_FAILURE;
+        }
+
         char* new_argv[argc + 2];
-        new_argv[0] = elevator;
-        for (int i = 0; i < argc; ++i) {
+        new_argv[0] = (char*)elevator;
+        new_argv[1] = self_path;
+        for (int i = 1; i < argc; ++i) {
             new_argv[i + 1] = argv[i];
         }
         new_argv[argc + 1] = NULL;
 
-        execvp(elevator, new_argv);
+        execv(elevator, new_argv);
         perror("Error executing privilege escalation tool");
         free(elevator);
+        free(self_path);
         return EXIT_FAILURE;
     }
 #endif
