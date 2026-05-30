@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <ctype.h>
 
 static int update_hosts(const char* fname, const char** domain, size_t ndomains)
 {
@@ -121,6 +120,22 @@ static char* find_executable(const char* name)
 
 #endif // defined(__linux__) || defined(__APPLE__)
 
+static bool is_ascii_alnum(unsigned char c)
+{
+    return (c >= '0' && c <= '9') ||
+           (c >= 'A' && c <= 'Z') ||
+           (c >= 'a' && c <= 'z');
+}
+
+static unsigned char ascii_lower(unsigned char c)
+{
+    if (c >= 'A' && c <= 'Z') {
+        return (unsigned char)(c + ('a' - 'A'));
+    }
+
+    return c;
+}
+
 static bool is_valid_label(const char* label, size_t len)
 {
     if (len == 0 || len > 63 || label[0] == '-' || label[len - 1] == '-') {
@@ -128,7 +143,7 @@ static bool is_valid_label(const char* label, size_t len)
     }
 
     for (size_t i = 0; i < len; ++i) {
-        if (!isalnum((unsigned char)label[i]) && label[i] != '-') {
+        if (!is_ascii_alnum((unsigned char)label[i]) && label[i] != '-') {
             return false;
         }
     }
@@ -159,6 +174,31 @@ static bool is_valid_domain(const char* s)
             label_start = p + 1;
         }
     }
+}
+
+static bool domain_equals_ignore_case(const char* a, const char* b)
+{
+    while (*a != '\0' && *b != '\0') {
+        if (ascii_lower((unsigned char)*a) != ascii_lower((unsigned char)*b)) {
+            return false;
+        }
+
+        ++a;
+        ++b;
+    }
+
+    return *a == *b;
+}
+
+static bool domain_was_seen(const char** domains, size_t ndomains, const char* domain)
+{
+    for (size_t i = 0; i < ndomains; ++i) {
+        if (domain_equals_ignore_case(domains[i], domain)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static char* get_hosts_file_path()
@@ -257,20 +297,30 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    if (escalate_privilege(argc, argv) != EXIT_SUCCESS) {
-        return EXIT_FAILURE;
-    }
-
     const char* domains[argc - 1];
     size_t ndomains = 0;
+    bool has_invalid_domain = false;
+
     for (int i = 1; i < argc; ++i) {
-        if (is_valid_domain(argv[i])) {
+        if (!is_valid_domain(argv[i])) {
+            fprintf(stderr, "Error: Invalid domain argument: %s\n", argv[i]);
+            has_invalid_domain = true;
+        }
+        else if (!domain_was_seen(domains, ndomains, argv[i])) {
             domains[ndomains++] = argv[i];
         }
     }
 
+    if (has_invalid_domain) {
+        return EXIT_FAILURE;
+    }
+
     if (ndomains == 0) {
         fputs("Error: No valid domains provided\n", stderr);
+        return EXIT_FAILURE;
+    }
+
+    if (escalate_privilege(argc, argv) != EXIT_SUCCESS) {
         return EXIT_FAILURE;
     }
 
