@@ -32,6 +32,14 @@ typedef struct {
     bool durability_failed;
 } hosts_update_progress;
 
+typedef struct {
+    bool mapped_to_loopback;
+    bool mapped_to_non_loopback;
+    const char* conflict_address;
+} hosts_domain_state;
+
+static bool domain_equals_ignore_case(const char* a, const char* b);
+
 #if defined(_WIN32)
 static bool get_windows_hosts_handle(FILE* hosts, HANDLE* handle)
 {
@@ -191,6 +199,230 @@ static bool sync_hosts_file(FILE* hosts)
 #endif
 }
 
+static bool is_hosts_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
+}
+
+static char* skip_hosts_spaces(char* cursor)
+{
+    while (is_hosts_space(*cursor)) {
+        ++cursor;
+    }
+
+    return cursor;
+}
+
+static bool is_accepted_loopback_address(const char* address)
+{
+    return strcmp(address, "127.0.0.1") == 0 || strcmp(address, "::1") == 0;
+}
+
+static bool load_hosts_contents(FILE* hosts, char** contents)
+{
+    *contents = NULL;
+
+    if (fseek(hosts, 0, SEEK_END) == -1) {
+        perror("Error seeking to end of hosts file");
+        return false;
+    }
+
+    long hosts_size = ftell(hosts);
+    if (hosts_size == -1) {
+        perror("Error determining hosts file size");
+        return false;
+    }
+
+    if (fseek(hosts, 0, SEEK_SET) == -1) {
+        perror("Error seeking to beginning of hosts file");
+        return false;
+    }
+
+    char* buffer = malloc((size_t)hosts_size + 1);
+    if (!buffer) {
+        perror("Error allocating memory");
+        return false;
+    }
+
+    size_t bytes_read = fread(buffer, 1, (size_t)hosts_size, hosts);
+    if (bytes_read != (size_t)hosts_size) {
+        if (ferror(hosts)) {
+            perror("Error reading hosts file");
+        }
+        else {
+            fputs("Error reading hosts file: unexpected end of file\n", stderr);
+        }
+        free(buffer);
+        return false;
+    }
+
+    buffer[hosts_size] = '\0';
+    *contents = buffer;
+    return true;
+}
+
+static void record_hosts_mapping(
+    const char* address,
+    const char* hostname,
+    bool is_loopback,
+    const char** domains,
+    size_t ndomains,
+    hosts_domain_state* states
+)
+{
+    for (size_t i = 0; i < ndomains; ++i) {
+        if (!domain_equals_ignore_case(hostname, domains[i])) {
+            continue;
+        }
+
+        if (is_loopback) {
+            states[i].mapped_to_loopback = true;
+        }
+        else {
+            states[i].mapped_to_non_loopback = true;
+            if (!states[i].conflict_address) {
+                states[i].conflict_address = address;
+            }
+        }
+    }
+}
+
+static void parse_hosts_line(char* line, const char** domains, size_t ndomains, hosts_domain_state* states)
+{
+    char* cursor = skip_hosts_spaces(line);
+    if (*cursor == '\0' || *cursor == '#') {
+        return;
+    }
+
+    char* address = cursor;
+    while (*cursor != '\0' && *cursor != '#' && !is_hosts_space(*cursor)) {
+        ++cursor;
+    }
+
+    if (*cursor == '\0' || *cursor == '#') {
+        *cursor = '\0';
+        return;
+    }
+
+    *cursor = '\0';
+    ++cursor;
+
+    bool is_loopback = is_accepted_loopback_address(address);
+    for (;;) {
+        cursor = skip_hosts_spaces(cursor);
+        if (*cursor == '\0' || *cursor == '#') {
+            return;
+        }
+
+        char* hostname = cursor;
+        while (*cursor != '\0' && *cursor != '#' && !is_hosts_space(*cursor)) {
+            ++cursor;
+        }
+
+        char delimiter = *cursor;
+        *cursor = '\0';
+        record_hosts_mapping(address, hostname, is_loopback, domains, ndomains, states);
+
+        if (delimiter == '\0' || delimiter == '#') {
+            return;
+        }
+
+        ++cursor;
+    }
+}
+
+static bool requested_domain_was_seen_before(const char** domains, size_t domain_index)
+{
+    for (size_t i = 0; i < domain_index; ++i) {
+        if (domain_equals_ignore_case(domains[i], domains[domain_index])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void report_hosts_conflicts(const char** domains, size_t ndomains, const hosts_domain_state* states)
+{
+    for (size_t i = 0; i < ndomains; ++i) {
+        if (!states[i].mapped_to_non_loopback || requested_domain_was_seen_before(domains, i)) {
+            continue;
+        }
+
+        fprintf(
+            stderr,
+            "Error: Hosts file already maps %s to non-loopback address %s; leaving hosts file unchanged\n",
+            domains[i],
+            states[i].conflict_address ? states[i].conflict_address : "unknown"
+        );
+    }
+}
+
+static bool inspect_existing_hosts(
+    FILE* hosts,
+    const char** domains,
+    size_t ndomains,
+    hosts_domain_state* states,
+    bool* has_conflicts
+)
+{
+    *has_conflicts = false;
+
+    char* contents = NULL;
+    if (!load_hosts_contents(hosts, &contents)) {
+        return false;
+    }
+
+    char* line = contents;
+    while (*line != '\0') {
+        char* line_end = strchr(line, '\n');
+        if (line_end) {
+            *line_end = '\0';
+        }
+
+        parse_hosts_line(line, domains, ndomains, states);
+
+        if (!line_end) {
+            break;
+        }
+
+        line = line_end + 1;
+    }
+
+    for (size_t i = 0; i < ndomains; ++i) {
+        if (states[i].mapped_to_non_loopback) {
+            *has_conflicts = true;
+            break;
+        }
+    }
+
+    if (*has_conflicts) {
+        report_hosts_conflicts(domains, ndomains, states);
+    }
+
+    free(contents);
+    return true;
+}
+
+static bool should_append_domain(const char** domains, size_t domain_index, const hosts_domain_state* states)
+{
+    return !requested_domain_was_seen_before(domains, domain_index) &&
+           !states[domain_index].mapped_to_loopback &&
+           !states[domain_index].mapped_to_non_loopback;
+}
+
+static size_t count_domains_to_append(const char** domains, size_t ndomains, const hosts_domain_state* states)
+{
+    size_t count = 0;
+    for (size_t i = 0; i < ndomains; ++i) {
+        if (should_append_domain(domains, i, states)) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
 static void report_hosts_update_failure(const hosts_update_progress* progress, size_t ndomains)
 {
     if (!progress->separator_write_attempted && progress->entries_attempted == 0) {
@@ -242,11 +474,36 @@ static int update_hosts(const char* fname, const char** domain, size_t ndomains)
     hosts_update_progress progress;
     memset(&progress, 0, sizeof(progress));
 
-    if (!append_hosts_separator_if_needed(hosts, &progress)) {
+    hosts_domain_state* states = calloc(ndomains, sizeof(*states));
+    if (!states) {
+        perror("Error allocating memory");
+        status = EXIT_FAILURE;
+    }
+
+    bool has_conflicts = false;
+    if (status == EXIT_SUCCESS && !inspect_existing_hosts(hosts, domain, ndomains, states, &has_conflicts)) {
+        status = EXIT_FAILURE;
+    }
+
+    size_t domains_to_append = 0;
+    if (status == EXIT_SUCCESS) {
+        if (has_conflicts) {
+            status = EXIT_FAILURE;
+        }
+        else {
+            domains_to_append = count_domains_to_append(domain, ndomains, states);
+        }
+    }
+
+    if (status == EXIT_SUCCESS && domains_to_append > 0 && !append_hosts_separator_if_needed(hosts, &progress)) {
         status = EXIT_FAILURE;
     }
 
     for (size_t i = 0; status == EXIT_SUCCESS && i < ndomains; ++i) {
+        if (!should_append_domain(domain, i, states)) {
+            continue;
+        }
+
         ++progress.entries_attempted;
         if (fprintf(hosts, "127.0.0.1\t%s\n", domain[i]) < 0) {
             perror("Error writing hosts entry");
@@ -257,13 +514,13 @@ static int update_hosts(const char* fname, const char** domain, size_t ndomains)
         ++progress.entries_accepted;
     }
 
-    if (status == EXIT_SUCCESS && fflush(hosts) != 0) {
+    if (status == EXIT_SUCCESS && domains_to_append > 0 && fflush(hosts) != 0) {
         perror("Error flushing hosts file");
         progress.durability_failed = true;
         status = EXIT_FAILURE;
     }
 
-    if (status == EXIT_SUCCESS && !sync_hosts_file(hosts)) {
+    if (status == EXIT_SUCCESS && domains_to_append > 0 && !sync_hosts_file(hosts)) {
         progress.durability_failed = true;
         status = EXIT_FAILURE;
     }
@@ -275,9 +532,10 @@ static int update_hosts(const char* fname, const char** domain, size_t ndomains)
     }
 
     if (status != EXIT_SUCCESS) {
-        report_hosts_update_failure(&progress, ndomains);
+        report_hosts_update_failure(&progress, domains_to_append);
     }
 
+    free(states);
     return status;
 }
 

@@ -412,6 +412,231 @@ static void test_multiple_domains_are_appended_in_order(const char* temp_directo
     free(path);
 }
 
+static void test_existing_loopback_mapping_is_not_duplicated(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "existing-loopback-hosts", "127.0.0.1 example.test");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "example.test" };
+    check_true(update_hosts(path, domains, 1) == EXIT_SUCCESS, "existing loopback mapping update succeeds");
+    check_file_equals(path, "127.0.0.1 example.test", "existing loopback mapping is not duplicated or given a separator");
+    free(path);
+}
+
+static void test_crlf_loopback_mapping_is_not_duplicated(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "crlf-loopback-hosts", "127.0.0.1 example.test\r\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "example.test" };
+    check_true(update_hosts(path, domains, 1) == EXIT_SUCCESS, "CRLF loopback mapping update succeeds");
+    check_file_equals(path, "127.0.0.1 example.test\r\n", "CRLF loopback mapping is not duplicated");
+    free(path);
+}
+
+static void test_multiple_hostnames_on_loopback_line_are_recognized(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(
+        temp_directory,
+        "multiple-hostnames-loopback-hosts",
+        "\n# comment-only line\n127.0.0.1 localhost example.test other.test # ignored.test\n"
+    );
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "example.test", "other.test" };
+    check_true(update_hosts(path, domains, 2) == EXIT_SUCCESS, "multiple hostnames loopback update succeeds");
+    check_file_equals(
+        path,
+        "\n# comment-only line\n127.0.0.1 localhost example.test other.test # ignored.test\n",
+        "multiple hostnames on one loopback line are not duplicated"
+    );
+    free(path);
+}
+
+static void test_comments_do_not_count_as_existing_mappings(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(
+        temp_directory,
+        "commented-hosts",
+        "# 127.0.0.1 comment.test\n127.0.0.1 localhost # inline.test\n\n"
+    );
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "comment.test", "inline.test" };
+    check_true(update_hosts(path, domains, 2) == EXIT_SUCCESS, "commented hostname update succeeds");
+    check_file_equals(
+        path,
+        "# 127.0.0.1 comment.test\n127.0.0.1 localhost # inline.test\n\n127.0.0.1\tcomment.test\n127.0.0.1\tinline.test\n",
+        "commented hostnames are ignored and missing domains are appended"
+    );
+    free(path);
+}
+
+static void test_existing_mapping_match_is_case_insensitive(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "case-insensitive-hosts", "127.0.0.1 Example.Test\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "example.test" };
+    check_true(update_hosts(path, domains, 1) == EXIT_SUCCESS, "case-insensitive existing mapping update succeeds");
+    check_file_equals(path, "127.0.0.1 Example.Test\n", "existing mapping is matched case-insensitively");
+    free(path);
+}
+
+static void test_duplicate_requested_domains_are_appended_once(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "duplicate-request-hosts", "");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "dupe.test", "DUPE.test" };
+    check_true(update_hosts(path, domains, 2) == EXIT_SUCCESS, "duplicate requested domain update succeeds");
+    check_file_equals(path, "127.0.0.1\tdupe.test\n", "duplicate requested domains are appended once with first spelling");
+    free(path);
+}
+
+static void test_ipv6_loopback_mapping_is_not_duplicated(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "ipv6-loopback-hosts", "::1 ipv6.test\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "ipv6.test" };
+    check_true(update_hosts(path, domains, 1) == EXIT_SUCCESS, "IPv6 loopback mapping update succeeds");
+    check_file_equals(path, "::1 ipv6.test\n", "IPv6 loopback mapping is treated as already present");
+    free(path);
+}
+
+static void test_crlf_ipv6_loopback_mapping_is_not_duplicated(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "crlf-ipv6-loopback-hosts", "::1 ipv6.test\r\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "ipv6.test" };
+    check_true(update_hosts(path, domains, 1) == EXIT_SUCCESS, "CRLF IPv6 loopback mapping update succeeds");
+    check_file_equals(path, "::1 ipv6.test\r\n", "CRLF IPv6 loopback mapping is treated as already present");
+    free(path);
+}
+
+static void test_non_loopback_conflict_reports_and_leaves_unchanged(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "non-loopback-conflict-hosts", "192.0.2.10 example.test\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "example.test" };
+    char* captured_stderr = NULL;
+    check_true(
+        update_hosts_capturing_stderr(path, domains, 1, temp_directory, "non-loopback-conflict-stderr", &captured_stderr) == EXIT_FAILURE,
+        "non-loopback conflict returns failure"
+    );
+    check_file_equals(path, "192.0.2.10 example.test\n", "non-loopback conflict leaves hosts file unchanged");
+    check_contains(captured_stderr, "already maps example.test to non-loopback address 192.0.2.10", "non-loopback conflict is reported");
+    free(captured_stderr);
+    free(path);
+}
+
+static void test_crlf_non_loopback_conflict_blocks_missing_domain(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "crlf-non-loopback-conflict-hosts", "192.0.2.10 conflict.test\r\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "conflict.test", "missing.test" };
+    char* captured_stderr = NULL;
+    check_true(
+        update_hosts_capturing_stderr(path, domains, 2, temp_directory, "crlf-non-loopback-conflict-stderr", &captured_stderr) == EXIT_FAILURE,
+        "CRLF conflict with missing domain returns failure"
+    );
+    check_file_equals(path, "192.0.2.10 conflict.test\r\n", "CRLF conflict blocks missing domain append and leaves hosts file unchanged");
+    check_contains(captured_stderr, "already maps conflict.test to non-loopback address 192.0.2.10", "CRLF non-loopback conflict is reported");
+    free(captured_stderr);
+    free(path);
+}
+
+static void test_mixed_existing_and_missing_domains_append_only_missing(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "mixed-existing-missing-hosts", "127.0.0.1 existing.test\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "existing.test", "missing.test" };
+    check_true(update_hosts(path, domains, 2) == EXIT_SUCCESS, "mixed existing and missing domain update succeeds");
+    check_file_equals(path, "127.0.0.1 existing.test\n127.0.0.1\tmissing.test\n", "only missing domains are appended");
+    free(path);
+}
+
+static void test_address_only_crlf_line_allows_append(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "address-only-crlf-hosts", "127.0.0.1\r\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "missing.test" };
+    check_true(update_hosts(path, domains, 1) == EXIT_SUCCESS, "address-only CRLF line update succeeds");
+    check_file_equals(path, "127.0.0.1\r\n127.0.0.1\tmissing.test\n", "address-only CRLF line is preserved before append");
+    free(path);
+}
+
+static void test_conflict_blocks_all_appends(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(
+        temp_directory,
+        "conflict-all-or-nothing-hosts",
+        "192.0.2.10 conflict.test\n192.0.2.11 other-conflict.test\n"
+    );
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "conflict.test", "missing.test", "other-conflict.test" };
+    char* captured_stderr = NULL;
+    check_true(
+        update_hosts_capturing_stderr(path, domains, 3, temp_directory, "conflict-all-or-nothing-stderr", &captured_stderr) == EXIT_FAILURE,
+        "conflict with missing domain returns failure"
+    );
+    check_file_equals(
+        path,
+        "192.0.2.10 conflict.test\n192.0.2.11 other-conflict.test\n",
+        "conflict blocks all appends and leaves hosts file unchanged"
+    );
+    check_contains(captured_stderr, "already maps conflict.test to non-loopback address 192.0.2.10", "all-or-nothing conflict is reported");
+    check_contains(captured_stderr, "already maps other-conflict.test to non-loopback address 192.0.2.11", "second conflict is reported");
+    free(captured_stderr);
+    free(path);
+}
+
 static void test_write_failure_after_prefix_reports_failure(const char* temp_directory)
 {
     reset_fault_injection();
@@ -711,6 +936,19 @@ int main(int argc, char** argv)
     test_existing_crlf_trailing_newline_is_preserved(argv[1]);
     test_empty_file_has_no_leading_separator(argv[1]);
     test_multiple_domains_are_appended_in_order(argv[1]);
+    test_existing_loopback_mapping_is_not_duplicated(argv[1]);
+    test_crlf_loopback_mapping_is_not_duplicated(argv[1]);
+    test_multiple_hostnames_on_loopback_line_are_recognized(argv[1]);
+    test_comments_do_not_count_as_existing_mappings(argv[1]);
+    test_existing_mapping_match_is_case_insensitive(argv[1]);
+    test_duplicate_requested_domains_are_appended_once(argv[1]);
+    test_ipv6_loopback_mapping_is_not_duplicated(argv[1]);
+    test_crlf_ipv6_loopback_mapping_is_not_duplicated(argv[1]);
+    test_non_loopback_conflict_reports_and_leaves_unchanged(argv[1]);
+    test_crlf_non_loopback_conflict_blocks_missing_domain(argv[1]);
+    test_mixed_existing_and_missing_domains_append_only_missing(argv[1]);
+    test_address_only_crlf_line_allows_append(argv[1]);
+    test_conflict_blocks_all_appends(argv[1]);
     test_write_failure_after_prefix_reports_failure(argv[1]);
     test_first_entry_write_failure_reports_attempt(argv[1]);
     test_separator_only_mutation_reports_failure(argv[1]);
