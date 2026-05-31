@@ -17,6 +17,7 @@
 #endif // defined(_WIN32)
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -641,35 +642,241 @@ static bool domain_was_seen(const char** domains, size_t ndomains, const char* d
     return false;
 }
 
-static char* get_hosts_file_path()
-{
+#if defined(_WIN32) || defined(DEV_ENV_UPDATE_HOSTS_TESTING)
+static const char WINDOWS_HOSTS_PATH_SUFFIX[] = "\\drivers\\etc\\hosts";
+static const char WINDOWS_SYSNATIVE_SUFFIX[] = "\\Sysnative";
+
 #if defined(_WIN32)
-    char* system_root = getenv("SystemRoot");
-    if (!system_root || !*system_root) {
-        perror("Error getting SystemRoot environment variable");
+typedef UINT (WINAPI *windows_directory_api)(LPSTR, UINT);
+typedef UINT windows_directory_api_length;
+#define WINDOWS_DIRECTORY_INITIAL_CAPACITY MAX_PATH
+#else
+typedef unsigned int (*windows_directory_api)(char*, unsigned int);
+typedef unsigned int windows_directory_api_length;
+#define WINDOWS_DIRECTORY_INITIAL_CAPACITY 260
+#endif
+
+enum windows_wow64_status {
+    WINDOWS_WOW64_STATUS_ERROR,
+    WINDOWS_WOW64_STATUS_NOT_WOW64,
+    WINDOWS_WOW64_STATUS_WOW64,
+};
+
+typedef char* (*windows_directory_resolver)(void* context);
+typedef enum windows_wow64_status (*windows_wow64_status_resolver)(void* context);
+
+struct windows_native_system_directory_resolver {
+    void* context;
+    windows_directory_resolver get_native_system_directory;
+    windows_wow64_status_resolver get_wow64_status;
+    windows_directory_resolver get_windows_directory;
+    windows_directory_resolver get_system_directory;
+};
+
+static char* make_windows_path_with_suffix(const char* base_path, size_t base_path_length, const char* suffix, size_t suffix_size)
+{
+    if (base_path == NULL || suffix == NULL || suffix_size == 0 || base_path_length > SIZE_MAX - suffix_size) {
         return NULL;
     }
 
-    const size_t max_path_length = 1024;
-    char* hosts_path = (char*)malloc(max_path_length * sizeof(char));
-    if (hosts_path == NULL) {
+    size_t path_length = base_path_length + suffix_size;
+    char* path = (char*)malloc(path_length);
+    if (path == NULL) {
         perror("Memory allocation error");
         return NULL;
     }
 
-    int n = snprintf(hosts_path, max_path_length, "%s\\System32\\drivers\\etc\\hosts", system_root);
-    if (n < 0 || n >= (int) max_path_length) {
-        if (n < 0) {
-            fprintf(stderr, "Error constructing hosts file path: encoding error\n");
-        }
-        else {
-            fprintf(stderr, "Error constructing hosts file path: path truncated (required %d bytes, buffer size %zu)\n", n + 1, max_path_length);
-        }
-        free(hosts_path);
+    memcpy(path, base_path, base_path_length);
+    memcpy(path + base_path_length, suffix, suffix_size);
+    return path;
+}
+
+static char* make_windows_hosts_file_path_from_system_dir(const char* system_dir, size_t system_dir_length)
+{
+    return make_windows_path_with_suffix(system_dir, system_dir_length, WINDOWS_HOSTS_PATH_SUFFIX, sizeof(WINDOWS_HOSTS_PATH_SUFFIX));
+}
+
+static char* get_windows_directory_from_api(windows_directory_api get_directory, const char* api_name)
+{
+    if (get_directory == NULL) {
         return NULL;
     }
 
+    size_t directory_capacity = WINDOWS_DIRECTORY_INITIAL_CAPACITY;
+    char* directory = (char*)malloc(directory_capacity);
+    if (directory == NULL) {
+        perror("Memory allocation error");
+        return NULL;
+    }
+
+    windows_directory_api_length directory_length = 0;
+    for (;;) {
+        if (directory_capacity > UINT_MAX) {
+            fprintf(stderr, "Error resolving Windows directory with %s: required buffer size exceeds Windows API limit\n", api_name);
+            free(directory);
+            return NULL;
+        }
+
+        directory_length = get_directory(directory, (windows_directory_api_length)directory_capacity);
+        if (directory_length == 0) {
+#if defined(_WIN32)
+            fprintf(stderr, "Error resolving Windows directory with %s: Windows error %lu\n", api_name, (unsigned long)GetLastError());
+#else
+            fprintf(stderr, "Error resolving Windows directory with %s\n", api_name);
+#endif
+            free(directory);
+            return NULL;
+        }
+
+        if ((size_t)directory_length < directory_capacity) {
+            return directory;
+        }
+
+        if (directory_length == UINT_MAX) {
+            fprintf(stderr, "Error resolving Windows directory with %s: required buffer size exceeds Windows API limit\n", api_name);
+            free(directory);
+            return NULL;
+        }
+
+        size_t required_capacity = (size_t)directory_length + 1;
+        char* resized_directory = (char*)realloc(directory, required_capacity);
+        if (resized_directory == NULL) {
+            perror("Memory allocation error");
+            free(directory);
+            return NULL;
+        }
+
+        directory = resized_directory;
+        directory_capacity = required_capacity;
+    }
+}
+
+static char* resolve_windows_native_system_directory_with_resolver(const struct windows_native_system_directory_resolver* resolver)
+{
+    if (resolver == NULL || resolver->get_wow64_status == NULL || resolver->get_windows_directory == NULL || resolver->get_system_directory == NULL) {
+        return NULL;
+    }
+
+    if (resolver->get_native_system_directory != NULL) {
+        return resolver->get_native_system_directory(resolver->context);
+    }
+
+    enum windows_wow64_status wow64_status = resolver->get_wow64_status(resolver->context);
+    if (wow64_status == WINDOWS_WOW64_STATUS_ERROR) {
+        return NULL;
+    }
+
+    if (wow64_status == WINDOWS_WOW64_STATUS_WOW64) {
+        char* windows_directory = resolver->get_windows_directory(resolver->context);
+        if (windows_directory == NULL) {
+            return NULL;
+        }
+
+        char* sysnative_directory = make_windows_path_with_suffix(windows_directory, strlen(windows_directory), WINDOWS_SYSNATIVE_SUFFIX, sizeof(WINDOWS_SYSNATIVE_SUFFIX));
+        if (sysnative_directory == NULL) {
+            fprintf(stderr, "Error constructing Windows native system directory from Windows directory result\n");
+        }
+        free(windows_directory);
+
+        return sysnative_directory;
+    }
+
+    return resolver->get_system_directory(resolver->context);
+}
+#endif // defined(_WIN32) || defined(DEV_ENV_UPDATE_HOSTS_TESTING)
+
+#if defined(_WIN32)
+typedef BOOL (WINAPI *is_wow64_process_api)(HANDLE, PBOOL);
+
+struct windows_api_resolver_context {
+    HMODULE kernel32;
+    windows_directory_api get_native_system_directory_api;
+};
+
+static enum windows_wow64_status get_windows_wow64_status(HMODULE kernel32)
+{
+    is_wow64_process_api is_wow64_process = (is_wow64_process_api)GetProcAddress(kernel32, "IsWow64Process");
+    if (is_wow64_process == NULL) {
+        return WINDOWS_WOW64_STATUS_NOT_WOW64;
+    }
+
+    BOOL is_wow64 = FALSE;
+    if (!is_wow64_process(GetCurrentProcess(), &is_wow64)) {
+        fprintf(stderr, "Error determining Windows WOW64 status with IsWow64Process: Windows error %lu\n", (unsigned long)GetLastError());
+        return WINDOWS_WOW64_STATUS_ERROR;
+    }
+
+    return is_wow64 ? WINDOWS_WOW64_STATUS_WOW64 : WINDOWS_WOW64_STATUS_NOT_WOW64;
+}
+
+static char* get_native_system_directory_from_context(void* context)
+{
+    struct windows_api_resolver_context* resolver_context = (struct windows_api_resolver_context*)context;
+    return get_windows_directory_from_api(resolver_context->get_native_system_directory_api, "GetNativeSystemDirectoryA");
+}
+
+static enum windows_wow64_status get_wow64_status_from_context(void* context)
+{
+    struct windows_api_resolver_context* resolver_context = (struct windows_api_resolver_context*)context;
+    return get_windows_wow64_status(resolver_context->kernel32);
+}
+
+static char* get_windows_directory_from_context(void* context)
+{
+    (void)context;
+    return get_windows_directory_from_api(GetWindowsDirectoryA, "GetWindowsDirectoryA");
+}
+
+static char* get_system_directory_from_context(void* context)
+{
+    (void)context;
+    return get_windows_directory_from_api(GetSystemDirectoryA, "GetSystemDirectoryA");
+}
+
+static char* get_windows_native_system_directory(void)
+{
+    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    if (kernel32 == NULL) {
+        fprintf(stderr, "Error resolving Windows native system directory with GetModuleHandleA: Windows error %lu\n", (unsigned long)GetLastError());
+        return NULL;
+    }
+
+    struct windows_api_resolver_context context = {
+        kernel32,
+        (windows_directory_api)GetProcAddress(kernel32, "GetNativeSystemDirectoryA")
+    };
+    struct windows_native_system_directory_resolver resolver = {
+        &context,
+        context.get_native_system_directory_api != NULL ? get_native_system_directory_from_context : NULL,
+        get_wow64_status_from_context,
+        get_windows_directory_from_context,
+        get_system_directory_from_context,
+    };
+
+    return resolve_windows_native_system_directory_with_resolver(&resolver);
+}
+
+static char* get_windows_hosts_file_path()
+{
+    char* system_dir = get_windows_native_system_directory();
+    if (system_dir == NULL) {
+        return NULL;
+    }
+
+    char* hosts_path = make_windows_hosts_file_path_from_system_dir(system_dir, strlen(system_dir));
+    if (hosts_path == NULL) {
+        fprintf(stderr, "Error constructing hosts file path from Windows native system directory result\n");
+    }
+    free(system_dir);
+
     return hosts_path;
+}
+#endif // defined(_WIN32)
+
+static char* get_hosts_file_path()
+{
+#if defined(_WIN32)
+    return get_windows_hosts_file_path();
 #else
     return my_strdup("/etc/hosts");
 #endif
