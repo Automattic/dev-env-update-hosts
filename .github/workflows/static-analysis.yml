@@ -3,16 +3,67 @@ name: Static Code Analysis
 on:
   push:
     branches:
-      - master
+      - trunk
   pull_request:
     branches:
-      - master
+      - trunk
   workflow_dispatch:
 
 permissions:
   contents: none
 
 jobs:
+  test-harnesses:
+    name: Run Local Test Harnesses
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Check harnesses for forbidden operations
+        shell: sh
+        run: |
+          forbidden_pattern='/etc/hosts|(^|[^[:alnum:]_.-])(sudo|pkexec|curl|wget|apt-get|apt|apk|dnf|yum|pacman|zypper|brew|npm|pnpm|yarn|pip|pip3|gem|composer)([^[:alnum:]_.-]|$)|(^|[^[:alnum:]_.-])(go|cargo)[[:space:]]+install([^[:alnum:]_.-]|$)|(^|[^[:alnum:]_.-])git([[:space:]]+[^[:space:];|&()<>]+){0,8}[[:space:]]+(clone|fetch|pull|push|remote|submodule|ls-remote)([^[:alnum:]_.-]|$)'
+
+          if find tests -type f -exec sh -c '
+            pattern=$1
+            shift
+            found=0
+
+            for file do
+              grep -nE "$pattern" "$file"
+              status=$?
+
+              if [ "$status" -eq 0 ]; then
+                found=1
+              elif [ "$status" -gt 1 ]; then
+                exit "$status"
+              fi
+            done
+
+            exit "$found"
+          ' sh "$forbidden_pattern" {} +; then
+            exit 0
+          fi
+
+          echo "Forbidden operation found under tests/. Harnesses must not touch hosts, elevate privileges, install packages, download code, or use git network commands."
+          exit 1
+
+      - name: Run local test harnesses
+        shell: sh
+        run: |
+          set -- tests/run-*.sh
+          if [ "$1" = 'tests/run-*.sh' ]; then
+            echo "No local test harnesses found."
+            exit 1
+          fi
+
+          for script do
+            sh "$script"
+          done
+
   scan-build:
     name: Run Clang Analyzer
     runs-on: ubuntu-latest
