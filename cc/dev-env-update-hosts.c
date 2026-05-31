@@ -1,48 +1,280 @@
 #if defined(__linux__) || defined(__APPLE__)
+#include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #endif // defined(__linux__) || defined(__APPLE__)
 
 #if defined(__APPLE__)
-#include <errno.h>
 #include <mach-o/dyld.h>
 #include <sys/acl.h>
 #include <sys/types.h>
 #endif // defined(__APPLE__)
 
+#if defined(_WIN32)
+#include <io.h>
+#include <windows.h>
+#endif // defined(_WIN32)
+
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef struct {
+    bool separator_write_attempted;
+    bool separator_written;
+    size_t entries_attempted;
+    size_t entries_accepted;
+    bool durability_failed;
+} hosts_update_progress;
+
+#if defined(_WIN32)
+static bool get_windows_hosts_handle(FILE* hosts, HANDLE* handle)
+{
+    int fd = _fileno(hosts);
+    if (fd == -1) {
+        perror("Error getting hosts file descriptor");
+        return false;
+    }
+
+    intptr_t os_handle = _get_osfhandle(fd);
+    if (os_handle == -1) {
+        perror("Error getting hosts file handle");
+        return false;
+    }
+
+    *handle = (HANDLE)os_handle;
+    return true;
+}
+
+static void print_windows_error(const char* message)
+{
+    fprintf(stderr, "%s: Windows error %lu\n", message, (unsigned long)GetLastError());
+}
+#endif // defined(_WIN32)
+
+static bool lock_hosts_file(FILE* hosts)
+{
+#if defined(__linux__) || defined(__APPLE__)
+    int fd = fileno(hosts);
+    if (fd == -1) {
+        perror("Error getting hosts file descriptor");
+        return false;
+    }
+
+    struct flock lock;
+    memset(&lock, 0, sizeof(lock));
+    lock.l_type = F_WRLCK;
+    lock.l_whence = SEEK_SET;
+
+    for (;;) {
+        if (fcntl(fd, F_SETLKW, &lock) == 0) {
+            return true;
+        }
+
+        if (errno != EINTR) {
+            perror("Error locking hosts file");
+            return false;
+        }
+    }
+#elif defined(_WIN32)
+    HANDLE handle;
+    if (!get_windows_hosts_handle(hosts, &handle)) {
+        return false;
+    }
+
+    OVERLAPPED overlapped;
+    memset(&overlapped, 0, sizeof(overlapped));
+    if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &overlapped)) {
+        print_windows_error("Error locking hosts file");
+        return false;
+    }
+
+    return true;
+#else
+    (void)hosts;
+    fputs("Error locking hosts file: unsupported platform\n", stderr);
+    return false;
+#endif
+}
+
+static bool append_hosts_separator_if_needed(FILE* hosts, hosts_update_progress* progress)
+{
+    if (fseek(hosts, 0, SEEK_END) == -1) {
+        perror("Error seeking to end of hosts file");
+        return false;
+    }
+
+    long hosts_size = ftell(hosts);
+    if (hosts_size == -1) {
+        perror("Error determining hosts file size");
+        return false;
+    }
+
+    if (hosts_size == 0) {
+        return true;
+    }
+
+    if (fseek(hosts, -1, SEEK_END) == -1) {
+        perror("Error seeking to end of hosts file");
+        return false;
+    }
+
+    int last_char = fgetc(hosts);
+    if (last_char == EOF) {
+        if (ferror(hosts)) {
+            perror("Error reading hosts file");
+        }
+        else {
+            fputs("Error reading hosts file: unexpected end of file\n", stderr);
+        }
+        return false;
+    }
+
+    if (fseek(hosts, 0, SEEK_END) == -1) {
+        perror("Error seeking to end of hosts file");
+        return false;
+    }
+
+    if (last_char != '\n') {
+        progress->separator_write_attempted = true;
+        if (fputc('\n', hosts) == EOF) {
+            perror("Error writing newline separator to hosts file");
+            return false;
+        }
+
+        progress->separator_written = true;
+    }
+
+    return true;
+}
+
+static bool sync_hosts_file(FILE* hosts)
+{
+#if defined(__linux__) || defined(__APPLE__)
+    int fd = fileno(hosts);
+    if (fd == -1) {
+        perror("Error getting hosts file descriptor");
+        return false;
+    }
+
+    for (;;) {
+        if (fsync(fd) == 0) {
+            return true;
+        }
+
+        if (errno != EINTR) {
+            perror("Error syncing hosts file");
+            return false;
+        }
+    }
+#elif defined(_WIN32)
+    HANDLE handle;
+    if (!get_windows_hosts_handle(hosts, &handle)) {
+        return false;
+    }
+
+    if (!FlushFileBuffers(handle)) {
+        print_windows_error("Error syncing hosts file");
+        return false;
+    }
+
+    return true;
+#else
+    (void)hosts;
+    fputs("Error syncing hosts file: unsupported platform\n", stderr);
+    return false;
+#endif
+}
+
+static void report_hosts_update_failure(const hosts_update_progress* progress, size_t ndomains)
+{
+    if (!progress->separator_write_attempted && progress->entries_attempted == 0) {
+        return;
+    }
+
+    if (progress->durability_failed) {
+        fprintf(stderr, "Error: hosts update failed after stdio accepted %zu of %zu requested entries", progress->entries_accepted, ndomains);
+    }
+    else {
+        fprintf(stderr, "Error: hosts update failed after accepting %zu of %zu requested entries", progress->entries_accepted, ndomains);
+    }
+
+    if (progress->separator_written) {
+        fputs("; separator write was accepted", stderr);
+    }
+    else if (progress->separator_write_attempted) {
+        fputs("; separator write was attempted", stderr);
+    }
+
+    if (progress->entries_attempted > progress->entries_accepted) {
+        fputs("; an additional entry write was attempted", stderr);
+    }
+
+    if (progress->durability_failed) {
+        fputs("; hosts file may have been modified and durability/persistence is uncertain; no rollback attempted\n", stderr);
+    }
+    else {
+        fputs("; hosts file may have been modified; no rollback attempted\n", stderr);
+    }
+}
+
 static int update_hosts(const char* fname, const char** domain, size_t ndomains)
 {
-    FILE* hosts = fopen(fname, "r+");
+    FILE* hosts = fopen(fname, "r+b");
     if (!hosts) {
         perror("Error opening hosts file");
         return EXIT_FAILURE;
     }
 
-    if (-1 == fseek(hosts, 0, SEEK_END)) {
-        perror("Error seeking to end of hosts file");
-        fclose(hosts);
+    if (!lock_hosts_file(hosts)) {
+        if (fclose(hosts) != 0) {
+            perror("Error closing hosts file");
+        }
         return EXIT_FAILURE;
     }
 
     int status = EXIT_SUCCESS;
-    for (size_t i = 0; i < ndomains; ++i) {
+    hosts_update_progress progress;
+    memset(&progress, 0, sizeof(progress));
+
+    if (!append_hosts_separator_if_needed(hosts, &progress)) {
+        status = EXIT_FAILURE;
+    }
+
+    for (size_t i = 0; status == EXIT_SUCCESS && i < ndomains; ++i) {
+        ++progress.entries_attempted;
         if (fprintf(hosts, "127.0.0.1\t%s\n", domain[i]) < 0) {
-            perror("Error writing to hosts file");
+            perror("Error writing hosts entry");
             status = EXIT_FAILURE;
             break;
         }
+
+        ++progress.entries_accepted;
+    }
+
+    if (status == EXIT_SUCCESS && fflush(hosts) != 0) {
+        perror("Error flushing hosts file");
+        progress.durability_failed = true;
+        status = EXIT_FAILURE;
+    }
+
+    if (status == EXIT_SUCCESS && !sync_hosts_file(hosts)) {
+        progress.durability_failed = true;
+        status = EXIT_FAILURE;
     }
 
     if (0 != fclose(hosts)) {
         perror("Error closing hosts file");
+        progress.durability_failed = true;
         status = EXIT_FAILURE;
+    }
+
+    if (status != EXIT_SUCCESS) {
+        report_hosts_update_failure(&progress, ndomains);
     }
 
     return status;
