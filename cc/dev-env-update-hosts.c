@@ -693,6 +693,11 @@ static char* make_windows_path_with_suffix(const char* base_path, size_t base_pa
 
 static char* make_windows_hosts_file_path_from_system_dir(const char* system_dir, size_t system_dir_length)
 {
+    if (system_dir == NULL || system_dir_length == 0) {
+        fprintf(stderr, "Error constructing hosts file path: empty Windows system directory\n");
+        return NULL;
+    }
+
     return make_windows_path_with_suffix(system_dir, system_dir_length, WINDOWS_HOSTS_PATH_SUFFIX, sizeof(WINDOWS_HOSTS_PATH_SUFFIX));
 }
 
@@ -772,7 +777,12 @@ static char* resolve_windows_native_system_directory_with_resolver(const struct 
             return NULL;
         }
 
-        char* sysnative_directory = make_windows_path_with_suffix(windows_directory, strlen(windows_directory), WINDOWS_SYSNATIVE_SUFFIX, sizeof(WINDOWS_SYSNATIVE_SUFFIX));
+        size_t windows_directory_length = strlen(windows_directory);
+        if (windows_directory_length > 0 && windows_directory[windows_directory_length - 1] == '\\') {
+            --windows_directory_length;
+        }
+
+        char* sysnative_directory = make_windows_path_with_suffix(windows_directory, windows_directory_length, WINDOWS_SYSNATIVE_SUFFIX, sizeof(WINDOWS_SYSNATIVE_SUFFIX));
         if (sysnative_directory == NULL) {
             fprintf(stderr, "Error constructing Windows native system directory from Windows directory result\n");
         }

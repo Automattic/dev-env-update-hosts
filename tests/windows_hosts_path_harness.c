@@ -154,7 +154,7 @@ static void test_empty_native_system_directory_input(void)
 {
     char* hosts_path = make_windows_hosts_file_path_from_system_dir("", 0);
 
-    check_string_equal(hosts_path, WINDOWS_HOSTS_PATH_SUFFIX, "empty native system directory input produces suffix-only path");
+    check_true(hosts_path == NULL, "empty native system directory input is rejected");
     free(hosts_path);
 }
 
@@ -196,6 +196,23 @@ static void test_native_api_unavailable_wow64_uses_sysnative(void)
     char* system_dir = resolve_with_mock(&context, false);
 
     check_string_equal(system_dir, "C:\\Windows\\Sysnative", "native API unavailable and WOW64 uses Sysnative path");
+    free(system_dir);
+}
+
+static void test_wow64_sysnative_strips_trailing_backslash(void)
+{
+    struct mock_windows_resolver_context context = {
+        WINDOWS_WOW64_STATUS_WOW64,
+        NULL,
+        "C:\\",
+        "C:\\Windows\\SysWOW64",
+        false,
+        false,
+        false,
+    };
+    char* system_dir = resolve_with_mock(&context, false);
+
+    check_string_equal(system_dir, "C:\\Sysnative", "WOW64 with drive-root Windows directory strips trailing backslash before Sysnative suffix");
     free(system_dir);
 }
 
@@ -298,6 +315,7 @@ int main(void)
     test_overflow_is_rejected_before_allocation();
     test_native_system_directory_api_success_is_used();
     test_native_api_unavailable_wow64_uses_sysnative();
+    test_wow64_sysnative_strips_trailing_backslash();
     test_native_api_unavailable_not_wow64_uses_system_directory();
     test_wow64_status_error_fails_closed();
     test_directory_api_failure_fails_closed();
