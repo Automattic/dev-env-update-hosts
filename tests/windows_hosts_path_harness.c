@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #define DEV_ENV_UPDATE_HOSTS_TESTING
 #define main dev_env_update_hosts_main
