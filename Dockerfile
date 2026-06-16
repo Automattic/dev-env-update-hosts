@@ -1,7 +1,7 @@
 FROM --platform=${BUILDPLATFORM} tonistiigi/xx:latest AS xx
 FROM --platform=${BUILDPLATFORM} crazymax/osxcross:latest-alpine AS osxcross
 
-FROM --platform=${BUILDPLATFORM} alpine:3.23.4 AS build
+FROM --platform=${BUILDPLATFORM} alpine:3.24.1 AS build
 COPY --from=xx / /
 COPY --from=osxcross / /
 RUN ln -s /osxcross/SDK /xx-sdk
