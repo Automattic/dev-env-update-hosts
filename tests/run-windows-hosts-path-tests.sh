@@ -7,7 +7,7 @@ repo_dir=$(
     cd "$(dirname "$0")/.."
     pwd
 )
-tmp_dir=$(mktemp -d /tmp/dev-env-update-hosts-windows-path-tests.XXXXXX)
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/dev-env-update-hosts-windows-path-tests.XXXXXX")
 
 cleanup() {
     rm -rf "$tmp_dir"

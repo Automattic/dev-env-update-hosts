@@ -1,4 +1,5 @@
 #if defined(__linux__) || defined(__APPLE__)
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -13,6 +14,8 @@
 
 #if defined(_WIN32)
 #include <io.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #endif // defined(_WIN32)
 
@@ -218,6 +221,24 @@ static bool is_accepted_loopback_address(const char* address)
     return strcmp(address, "127.0.0.1") == 0 || strcmp(address, "::1") == 0;
 }
 
+static bool is_valid_hosts_address(const char* address)
+{
+#if defined(_WIN32)
+    struct in_addr ipv4_address;
+    struct in6_addr ipv6_address;
+    return InetPtonA(AF_INET, address, &ipv4_address) == 1 ||
+           InetPtonA(AF_INET6, address, &ipv6_address) == 1;
+#elif defined(__linux__) || defined(__APPLE__)
+    struct in_addr ipv4_address;
+    struct in6_addr ipv6_address;
+    return inet_pton(AF_INET, address, &ipv4_address) == 1 ||
+           inet_pton(AF_INET6, address, &ipv6_address) == 1;
+#else
+    (void)address;
+    return false;
+#endif
+}
+
 static bool load_hosts_contents(FILE* hosts, char** contents)
 {
     *contents = NULL;
@@ -306,6 +327,10 @@ static void parse_hosts_line(char* line, const char** domains, size_t ndomains, 
 
     *cursor = '\0';
     ++cursor;
+
+    if (!is_valid_hosts_address(address)) {
+        return;
+    }
 
     bool is_loopback = is_accepted_loopback_address(address);
     for (;;) {

@@ -25,12 +25,12 @@ RUN TARGETPLATFORM=darwin/amd64  xx-clang -Wall -O2 -s -o output/dev-env-update-
 RUN \
     export TARGETPLATFORM=windows/amd64; \
     x86_64-w64-mingw32-windres --input cc/dev-env-update-hosts.rc --output dev-env-update-hosts.res --output-format=coff; \
-    xx-clang -Wall -O2 -static -s -o output/dev-env-update-hosts-windows-amd64.exe cc/dev-env-update-hosts.c dev-env-update-hosts.res
+    xx-clang -Wall -O2 -static -s -o output/dev-env-update-hosts-windows-amd64.exe cc/dev-env-update-hosts.c dev-env-update-hosts.res -lws2_32
 
 RUN \
     export TARGETPLATFORM=windows/386; \
     i686-w64-mingw32-windres --input cc/dev-env-update-hosts.rc --output dev-env-update-hosts.res --output-format=coff; \
-    xx-clang -Wall -O2 -static -s -o output/dev-env-update-hosts-windows-386.exe cc/dev-env-update-hosts.c dev-env-update-hosts.res
+    xx-clang -Wall -O2 -static -s -o output/dev-env-update-hosts-windows-386.exe cc/dev-env-update-hosts.c dev-env-update-hosts.res -lws2_32
 
 FROM scratch
 

@@ -608,6 +608,24 @@ static void test_address_only_crlf_line_allows_append(const char* temp_directory
     free(path);
 }
 
+static void test_malformed_address_line_does_not_block_append(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "malformed-address-hosts", "not-an-address example.test\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "example.test" };
+    check_true(update_hosts(path, domains, 1) == EXIT_SUCCESS, "malformed address line update succeeds");
+    check_file_equals(
+        path,
+        "not-an-address example.test\n127.0.0.1\texample.test\n",
+        "malformed address line does not suppress requested loopback mapping"
+    );
+    free(path);
+}
+
 static void test_conflict_blocks_all_appends(const char* temp_directory)
 {
     reset_fault_injection();
@@ -968,6 +986,7 @@ int main(int argc, char** argv)
     test_crlf_non_loopback_conflict_blocks_missing_domain(argv[1]);
     test_mixed_existing_and_missing_domains_append_only_missing(argv[1]);
     test_address_only_crlf_line_allows_append(argv[1]);
+    test_malformed_address_line_does_not_block_append(argv[1]);
     test_conflict_blocks_all_appends(argv[1]);
     test_write_failure_after_prefix_reports_failure(argv[1]);
     test_first_entry_write_failure_reports_attempt(argv[1]);
