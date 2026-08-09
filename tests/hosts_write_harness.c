@@ -675,6 +675,26 @@ static void test_first_entry_write_failure_reports_attempt(const char* temp_dire
     free(path);
 }
 
+static void test_write_failure_reports_all_requested_entries(const char* temp_directory)
+{
+    reset_fault_injection();
+    char* path = create_hosts_fixture(temp_directory, "mixed-write-failure-hosts", "127.0.0.1\texisting.test\n");
+    if (!path) {
+        return;
+    }
+
+    const char* domains[] = { "existing.test", "missing.test" };
+    char* captured_stderr = NULL;
+    fail_hosts_entry_write_number = 1;
+    check_true(
+        update_hosts_capturing_stderr(path, domains, 2, temp_directory, "mixed-write-failure-stderr", &captured_stderr) == EXIT_FAILURE,
+        "write failure after existing mapping returns failure"
+    );
+    check_contains(captured_stderr, "accepting 0 of 2 requested entries", "write failure reports all requested entries");
+    free(captured_stderr);
+    free(path);
+}
+
 static void test_separator_only_mutation_reports_failure(const char* temp_directory)
 {
     reset_fault_injection();
@@ -951,6 +971,7 @@ int main(int argc, char** argv)
     test_conflict_blocks_all_appends(argv[1]);
     test_write_failure_after_prefix_reports_failure(argv[1]);
     test_first_entry_write_failure_reports_attempt(argv[1]);
+    test_write_failure_reports_all_requested_entries(argv[1]);
     test_separator_only_mutation_reports_failure(argv[1]);
     test_open_failure_returns_failure(argv[1]);
     test_lock_failure_returns_failure(argv[1]);

@@ -112,7 +112,7 @@ static bool lock_hosts_file(FILE* hosts)
 
 static bool append_hosts_separator_if_needed(FILE* hosts, hosts_update_progress* progress)
 {
-    if (fseek(hosts, 0, SEEK_END) == -1) {
+    if (fseek(hosts, 0, SEEK_END) != 0) {
         perror("Error seeking to end of hosts file");
         return false;
     }
@@ -127,7 +127,7 @@ static bool append_hosts_separator_if_needed(FILE* hosts, hosts_update_progress*
         return true;
     }
 
-    if (fseek(hosts, -1, SEEK_END) == -1) {
+    if (fseek(hosts, -1, SEEK_END) != 0) {
         perror("Error seeking to end of hosts file");
         return false;
     }
@@ -143,7 +143,7 @@ static bool append_hosts_separator_if_needed(FILE* hosts, hosts_update_progress*
         return false;
     }
 
-    if (fseek(hosts, 0, SEEK_END) == -1) {
+    if (fseek(hosts, 0, SEEK_END) != 0) {
         perror("Error seeking to end of hosts file");
         return false;
     }
@@ -222,7 +222,7 @@ static bool load_hosts_contents(FILE* hosts, char** contents)
 {
     *contents = NULL;
 
-    if (fseek(hosts, 0, SEEK_END) == -1) {
+    if (fseek(hosts, 0, SEEK_END) != 0) {
         perror("Error seeking to end of hosts file");
         return false;
     }
@@ -233,7 +233,7 @@ static bool load_hosts_contents(FILE* hosts, char** contents)
         return false;
     }
 
-    if (fseek(hosts, 0, SEEK_SET) == -1) {
+    if (fseek(hosts, 0, SEEK_SET) != 0) {
         perror("Error seeking to beginning of hosts file");
         return false;
     }
@@ -532,7 +532,7 @@ static int update_hosts(const char* fname, const char** domain, size_t ndomains)
     }
 
     if (status != EXIT_SUCCESS) {
-        report_hosts_update_failure(&progress, domains_to_append);
+        report_hosts_update_failure(&progress, ndomains);
     }
 
     free(states);
