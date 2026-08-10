@@ -19,7 +19,7 @@ binary="$tmp_dir/windows-hosts-path-harness"
 cc -Wall -O2 -Werror -o "$binary" "$repo_dir/tests/windows_hosts_path_harness.c"
 "$binary"
 
-resolver_source_file="$repo_dir/cc/dev-env-update-hosts.c"
+resolver_source_file="$repo_dir/cc/dev-env-update-hosts-windows-path.c"
 
 outer_open_count=$(grep -cFx '#if defined(_WIN32) || defined(DEV_ENV_UPDATE_HOSTS_TESTING)' "$resolver_source_file")
 outer_close_count=$(grep -cFx '#endif // defined(_WIN32) || defined(DEV_ENV_UPDATE_HOSTS_TESTING)' "$resolver_source_file")
