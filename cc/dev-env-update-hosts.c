@@ -66,6 +66,18 @@ static void print_windows_error(const char* message)
 {
     fprintf(stderr, "%s: Windows error %lu\n", message, (unsigned long)GetLastError());
 }
+
+static bool initialize_windows_sockets(void)
+{
+    WSADATA data;
+    int result = WSAStartup(MAKEWORD(2, 2), &data);
+    if (result != 0) {
+        fprintf(stderr, "Error initializing Windows sockets: Windows error %d\n", result);
+        return false;
+    }
+
+    return true;
+}
 #endif // defined(_WIN32)
 
 static bool lock_hosts_file(FILE* hosts)
@@ -482,9 +494,18 @@ static void report_hosts_update_failure(const hosts_update_progress* progress, s
 
 static int update_hosts(const char* fname, const char** domain, size_t ndomains)
 {
+#if defined(_WIN32)
+    if (!initialize_windows_sockets()) {
+        return EXIT_FAILURE;
+    }
+#endif
+
     FILE* hosts = fopen(fname, "r+b");
     if (!hosts) {
         perror("Error opening hosts file");
+#if defined(_WIN32)
+        WSACleanup();
+#endif
         return EXIT_FAILURE;
     }
 
@@ -492,6 +513,9 @@ static int update_hosts(const char* fname, const char** domain, size_t ndomains)
         if (fclose(hosts) != 0) {
             perror("Error closing hosts file");
         }
+#if defined(_WIN32)
+        WSACleanup();
+#endif
         return EXIT_FAILURE;
     }
 
@@ -561,6 +585,9 @@ static int update_hosts(const char* fname, const char** domain, size_t ndomains)
     }
 
     free(states);
+#if defined(_WIN32)
+    WSACleanup();
+#endif
     return status;
 }
 
